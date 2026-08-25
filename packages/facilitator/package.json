@@ -11,8 +11,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@x402/core": "^0.1.0",
-    "@x402/evm": "^0.1.0",
+    "@x402/core": "^2.23.0",
+    "@x402/evm": "^2.23.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

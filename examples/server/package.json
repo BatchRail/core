@@ -8,9 +8,13 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@x402/core": "^2.23.0",
+    "@x402/evm": "^2.23.0",
+    "@x402/express": "^2.23.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "viem": "^2.22.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
