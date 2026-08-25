@@ -85,7 +85,7 @@ registerExactEvmScheme(facilitator, {
 
 // Optional logging hooks
 facilitator
-  .onBeforeVerify(async ({ paymentPayload, requirements }) => {
+  .onBeforeVerify(async ({ requirements }) => {
     console.log("[verify] scheme=%s network=%s", requirements.scheme, requirements.network);
   })
   .onAfterSettle(async ({ result }) => {
@@ -94,6 +94,91 @@ facilitator
   .onSettleFailure(async ({ error }) => {
     console.error("[settle] failure:", error?.message ?? error);
   });
+
+/**
+ * Normalize /supported to the exact shape HTTPFacilitatorClient validates with Zod:
+ *   { kinds: [{ x402Version, scheme, network, extra? }], extensions: string[], signers: Record<string, string[]> }
+ *
+ * The SDK rejects null extensions/signers and non-plain extra objects.
+ */
+function normalizeSupported(raw: unknown) {
+  const data = (raw ?? {}) as {
+    kinds?: Array<Record<string, unknown>>;
+    extensions?: unknown;
+    signers?: unknown;
+  };
+
+  const kinds = Array.isArray(data.kinds)
+    ? data.kinds
+        .filter((k) => k && typeof k === "object")
+        .map((k) => {
+          const kind: {
+            x402Version: number;
+            scheme: string;
+            network: string;
+            extra?: Record<string, unknown>;
+          } = {
+            x402Version: Number(k.x402Version ?? 2),
+            scheme: String(k.scheme ?? ""),
+            network: String(k.network ?? ""),
+          };
+
+          // Only include extra when it is a plain object with JSON-safe values
+          if (
+            k.extra &&
+            typeof k.extra === "object" &&
+            !Array.isArray(k.extra)
+          ) {
+            const extra: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(
+              k.extra as Record<string, unknown>
+            )) {
+              if (value === undefined) continue;
+              // stringify bigints; drop functions/symbols
+              if (typeof value === "bigint") {
+                extra[key] = value.toString();
+              } else if (
+                typeof value === "string" ||
+                typeof value === "number" ||
+                typeof value === "boolean" ||
+                value === null ||
+                (typeof value === "object" && value !== null)
+              ) {
+                extra[key] = value;
+              }
+            }
+            if (Object.keys(extra).length > 0) {
+              kind.extra = extra;
+            }
+          }
+
+          return kind;
+        })
+        .filter((k) => k.scheme && k.network)
+    : [];
+
+  const extensions = Array.isArray(data.extensions)
+    ? data.extensions.map((e) => String(e))
+    : [];
+
+  const signers: Record<string, string[]> = {};
+  if (data.signers && typeof data.signers === "object" && !Array.isArray(data.signers)) {
+    for (const [family, addrs] of Object.entries(
+      data.signers as Record<string, unknown>
+    )) {
+      if (Array.isArray(addrs)) {
+        signers[family] = addrs.map((a) => String(a));
+      }
+    }
+  }
+
+  // Always advertise our facilitator address under the EVM family
+  if (!signers["eip155:*"] && !signers["eip155"]) {
+    signers["eip155:*"] = [account.address];
+  }
+
+  return { kinds, extensions, signers };
+}
 
 // ── HTTP server ─────────────────────────────────────────────
 const app = express();
@@ -117,7 +202,8 @@ app.get("/health", (_req, res) => {
  */
 app.get("/supported", async (_req, res) => {
   try {
-    const supported = await facilitator.getSupported();
+    const raw = await Promise.resolve(facilitator.getSupported());
+    const supported = normalizeSupported(raw);
     res.json(supported);
   } catch (err: any) {
     console.error("[supported] error", err);
