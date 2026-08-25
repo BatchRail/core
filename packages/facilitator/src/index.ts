@@ -9,12 +9,6 @@
  *   GET  /supported
  *   POST /verify
  *   POST /settle
- *
- * What this does (in plain English):
- * - Clients (buyers) open a payment channel by depositing USDC once.
- * - Each API call is paid with a cheap off-chain "voucher" signature.
- * - This facilitator checks those vouchers (/verify) and later pushes
- *   the real on-chain claim / settle / refund transactions (/settle).
  */
 
 import "dotenv/config";
@@ -29,14 +23,14 @@ import { toFacilitatorEvmSigner } from "@x402/evm";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
 import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
 
-const PORT = Number(process.env.FACILITATOR_PORT ?? 4022);
+// Railway injects PORT; local dev uses FACILITATOR_PORT or 4022
+const PORT = Number(process.env.PORT ?? process.env.FACILITATOR_PORT ?? 4022);
 const NETWORK = (process.env.NETWORK ?? "eip155:84532") as "eip155:84532";
 const RPC_URL = process.env.RPC_URL ?? "https://sepolia.base.org";
 
-// ── Keys ────────────────────────────────────────────────────
 if (!process.env.FACILITATOR_PRIVATE_KEY) {
   console.error(
-    "Missing FACILITATOR_PRIVATE_KEY in .env\n" +
+    "Missing FACILITATOR_PRIVATE_KEY\n" +
       "This key pays gas and relays claim/settle/refund transactions on Base Sepolia."
   );
   process.exit(1);
@@ -46,9 +40,6 @@ const account = privateKeyToAccount(
   process.env.FACILITATOR_PRIVATE_KEY as `0x${string}`
 );
 
-// Optional dedicated authorizer — if set, the facilitator advertises this
-// address as receiverAuthorizer so resource servers can delegate claim/refund
-// signatures to us. If unset, servers must supply their own authorizer key.
 const authorizerKey = process.env.RECEIVER_AUTHORIZER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
@@ -56,7 +47,6 @@ const authorizerAccount = authorizerKey
   ? privateKeyToAccount(authorizerKey)
   : undefined;
 
-// ── Viem wallet + public client ─────────────────────────────
 const walletClient = createWalletClient({
   account,
   chain: baseSepolia,
@@ -65,25 +55,18 @@ const walletClient = createWalletClient({
 
 const facilitatorSigner = toFacilitatorEvmSigner(walletClient);
 
-// ── Register schemes with the official x402Facilitator ──────
 const facilitator = new x402Facilitator();
 
-// Primary: batch-settlement (the whole point of BatchRail)
 facilitator.register(
   NETWORK,
-  new BatchSettlementEvmScheme(
-    facilitatorSigner,
-    authorizerAccount // optional — omit to force servers to bring their own authorizer
-  )
+  new BatchSettlementEvmScheme(facilitatorSigner, authorizerAccount)
 );
 
-// Also support exact (fallback for low-volume / one-off payments)
 registerExactEvmScheme(facilitator, {
   signer: facilitatorSigner,
   networks: NETWORK,
 });
 
-// Optional logging hooks
 facilitator
   .onBeforeVerify(async ({ requirements }) => {
     console.log("[verify] scheme=%s network=%s", requirements.scheme, requirements.network);
@@ -95,12 +78,6 @@ facilitator
     console.error("[settle] failure:", error?.message ?? error);
   });
 
-/**
- * Normalize /supported to the exact shape HTTPFacilitatorClient validates with Zod:
- *   { kinds: [{ x402Version, scheme, network, extra? }], extensions: string[], signers: Record<string, string[]> }
- *
- * The SDK rejects null extensions/signers and non-plain extra objects.
- */
 function normalizeSupported(raw: unknown) {
   const data = (raw ?? {}) as {
     kinds?: Array<Record<string, unknown>>;
@@ -123,18 +100,10 @@ function normalizeSupported(raw: unknown) {
             network: String(k.network ?? ""),
           };
 
-          // Only include extra when it is a plain object with JSON-safe values
-          if (
-            k.extra &&
-            typeof k.extra === "object" &&
-            !Array.isArray(k.extra)
-          ) {
+          if (k.extra && typeof k.extra === "object" && !Array.isArray(k.extra)) {
             const extra: Record<string, unknown> = {};
-            for (const [key, value] of Object.entries(
-              k.extra as Record<string, unknown>
-            )) {
+            for (const [key, value] of Object.entries(k.extra as Record<string, unknown>)) {
               if (value === undefined) continue;
-              // stringify bigints; drop functions/symbols
               if (typeof value === "bigint") {
                 extra[key] = value.toString();
               } else if (
@@ -147,9 +116,7 @@ function normalizeSupported(raw: unknown) {
                 extra[key] = value;
               }
             }
-            if (Object.keys(extra).length > 0) {
-              kind.extra = extra;
-            }
+            if (Object.keys(extra).length > 0) kind.extra = extra;
           }
 
           return kind;
@@ -163,16 +130,13 @@ function normalizeSupported(raw: unknown) {
 
   const signers: Record<string, string[]> = {};
   if (data.signers && typeof data.signers === "object" && !Array.isArray(data.signers)) {
-    for (const [family, addrs] of Object.entries(
-      data.signers as Record<string, unknown>
-    )) {
+    for (const [family, addrs] of Object.entries(data.signers as Record<string, unknown>)) {
       if (Array.isArray(addrs)) {
         signers[family] = addrs.map((a) => String(a));
       }
     }
   }
 
-  // Always advertise our facilitator address under the EVM family
   if (!signers["eip155:*"] && !signers["eip155"]) {
     signers["eip155:*"] = [account.address];
   }
@@ -180,7 +144,6 @@ function normalizeSupported(raw: unknown) {
   return { kinds, extensions, signers };
 }
 
-// ── HTTP server ─────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -195,27 +158,16 @@ app.get("/health", (_req, res) => {
   });
 });
 
-/**
- * GET /supported
- * Lists the schemes + networks this facilitator can handle.
- * Resource servers and clients call this first.
- */
 app.get("/supported", async (_req, res) => {
   try {
     const raw = await Promise.resolve(facilitator.getSupported());
-    const supported = normalizeSupported(raw);
-    res.json(supported);
+    res.json(normalizeSupported(raw));
   } catch (err: any) {
     console.error("[supported] error", err);
     res.status(500).json({ error: err?.message ?? "internal_error" });
   }
 });
 
-/**
- * POST /verify
- * Body: { paymentPayload, paymentRequirements }
- * Checks a deposit or voucher without spending gas.
- */
 app.post("/verify", async (req, res) => {
   try {
     const { paymentPayload, paymentRequirements } = req.body ?? {};
@@ -225,7 +177,6 @@ app.post("/verify", async (req, res) => {
         invalidReason: "missing_paymentPayload_or_paymentRequirements",
       });
     }
-
     const result = await facilitator.verify(paymentPayload, paymentRequirements);
     res.json(result);
   } catch (err: any) {
@@ -237,11 +188,6 @@ app.post("/verify", async (req, res) => {
   }
 });
 
-/**
- * POST /settle
- * Body: { paymentPayload, paymentRequirements }
- * Executes the on-chain action (deposit / claim / settle / refund).
- */
 app.post("/settle", async (req, res) => {
   try {
     const { paymentPayload, paymentRequirements } = req.body ?? {};
@@ -251,7 +197,6 @@ app.post("/settle", async (req, res) => {
         errorReason: "missing_paymentPayload_or_paymentRequirements",
       });
     }
-
     const result = await facilitator.settle(paymentPayload, paymentRequirements);
     res.json(result);
   } catch (err: any) {
@@ -263,11 +208,11 @@ app.post("/settle", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log("");
   console.log("  BatchRail facilitator ready");
   console.log("  ─────────────────────────────────────");
-  console.log(`  URL                 http://localhost:${PORT}`);
+  console.log(`  Port                ${PORT}`);
   console.log(`  Network             ${NETWORK}`);
   console.log(`  Facilitator address ${account.address}`);
   if (authorizerAccount) {
