@@ -11,10 +11,14 @@
  * Requires:
  *   - Facilitator running on FACILITATOR_URL (default http://localhost:4022)
  *   - Example server running on RESOURCE_SERVER_URL (default http://localhost:4021)
- *   - EVM_PRIVATE_KEY funded with Base Sepolia USDC (+ a little ETH if needed for unrelated txs)
+ *   - EVM_PRIVATE_KEY funded with Base Sepolia USDC
  */
 
-import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import dotenv from "dotenv";
 import { createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -24,18 +28,74 @@ import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
 import { FileClientChannelStorage } from "@x402/evm/batch-settlement/client/file-storage";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 
-const evmPrivateKeyRaw = process.env.EVM_PRIVATE_KEY?.trim();
+// ── Load .env from several likely locations ─────────────────
+// `import "dotenv/config"` only reads process.cwd()/.env, which breaks
+// when pnpm runs the package from a different working directory.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const envCandidates = [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(process.cwd(), "examples/client/.env"),
+  path.resolve(__dirname, "../.env"), // examples/client/.env
+  path.resolve(__dirname, "../../../.env"), // monorepo root from src/
+];
+
+const loadedEnvPaths: string[] = [];
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    const result = dotenv.config({ path: envPath, override: false });
+    if (!result.error) {
+      loadedEnvPaths.push(envPath);
+    }
+  }
+}
+
+function readPrivateKey(): string | undefined {
+  // Accept common variants people accidentally use
+  const raw =
+    process.env.EVM_PRIVATE_KEY?.trim() ||
+    process.env.CLIENT_PRIVATE_KEY?.trim() ||
+    process.env.PRIVATE_KEY?.trim();
+  if (!raw) return undefined;
+  // Strip surrounding quotes if present
+  const unquoted = raw.replace(/^['"]|['"]$/g, "");
+  return unquoted || undefined;
+}
+
+const evmPrivateKeyRaw = readPrivateKey();
 if (!evmPrivateKeyRaw) {
+  console.error("Missing EVM_PRIVATE_KEY in .env");
+  console.error("This wallet must hold Base Sepolia USDC to open a payment channel.");
+  console.error("USDC address: 0x036CbD53842c5426634e7929541eC2318f3dCF7e");
+  console.error("");
+  console.error("cwd:", process.cwd());
+  console.error("Checked .env paths:");
+  for (const p of envCandidates) {
+    console.error(`  ${fs.existsSync(p) ? "found" : "miss "}  ${p}`);
+  }
+  if (loadedEnvPaths.length) {
+    console.error("Loaded from:", loadedEnvPaths.join(", "));
+    console.error(
+      "A .env was loaded but EVM_PRIVATE_KEY was empty or missing inside it."
+    );
+    console.error('Expected line:  EVM_PRIVATE_KEY=0xabc123...  (no spaces around =)');
+  } else {
+    console.error("No .env file was found in any of the paths above.");
+  }
+  process.exit(1);
+}
+
+if (!/^0x[0-9a-fA-F]{64}$/.test(evmPrivateKeyRaw)) {
   console.error(
-    "Missing EVM_PRIVATE_KEY in .env\n" +
-      "This wallet must hold Base Sepolia USDC to open a payment channel.\n" +
-      "USDC address: 0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    "EVM_PRIVATE_KEY looks invalid. Expected 0x + 64 hex characters (32-byte key)."
   );
+  console.error(`Got length=${evmPrivateKeyRaw.length} prefix=${evmPrivateKeyRaw.slice(0, 4)}…`);
   process.exit(1);
 }
 
 const evmPrivateKey = evmPrivateKeyRaw as `0x${string}`;
-const voucherKeyRaw = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY?.trim() || undefined;
+const voucherKeyRaw =
+  process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY?.trim()?.replace(/^['"]|['"]$/g, "") ||
+  undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
@@ -76,6 +136,9 @@ async function main(): Promise<void> {
   console.log("");
   console.log("  BatchRail example client");
   console.log("  ─────────────────────────────────────");
+  if (loadedEnvPaths.length) {
+    console.log(`  .env            ${loadedEnvPaths[0]}`);
+  }
   console.log(`  Target          ${url}`);
   console.log(`  Payer           ${signer.address}`);
   console.log(`  Voucher signer  ${voucherSigner?.address ?? signer.address}`);
