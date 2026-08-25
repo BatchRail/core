@@ -2,7 +2,7 @@
 
 **x402 batch-settlement facilitator + managed channel layer**
 
-Open-source skeleton for local demos. Production AI risk scoring, bot swarm, LP float, and merchant tooling are **hosted-only** — see [SCOPE.md](./SCOPE.md).
+Open-source local demo. Product overview: [batchrail.io](https://batchrail.io)
 
 ## What’s inside
 
@@ -62,10 +62,9 @@ Expected flow:
 
 | Network | CAIP-2 | Status |
 |---------|--------|--------|
-| Base Sepolia | eip155:84532 | Primary (MVP) |
-| Base | eip155:8453 | Phase 2 |
+| Base Sepolia | eip155:84532 | Primary (demo) |
+| Base | eip155:8453 | Planned |
 
 ## License
 
-MIT for open examples and facilitator skeleton.  
-Hosted product IP (risk models, bots, LP, dashboards) is proprietary — see SCOPE.md.
+MIT
