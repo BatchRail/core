@@ -30,6 +30,7 @@ eip155:84532
 | Method | Path | Purpose |
 |--------|------|--------|
 | `GET` | [/health](https://facilitator.batchrail.io/health) | Liveness and basic service info |
+| `GET` | [/stats](https://facilitator.batchrail.io/stats) | Public aggregate usage counters |
 | `GET` | [/supported](https://facilitator.batchrail.io/supported) | Schemes and networks this facilitator supports |
 | `POST` | `/verify` | Verify a payment payload (no gas) |
 | `POST` | `/settle` | Submit on-chain settlement actions |
@@ -38,6 +39,15 @@ eip155:84532
 
 Returns JSON such as `{ "status": "ok", "network": "eip155:84532", ... }`.
 Use this to confirm the service is up.
+
+### `/stats`
+
+Public usage snapshot (no keys, balances, or payer data):
+
+- `totalRequests`, `verifyCount`, `settleCount`, `supportedCount`, `rateLimitedCount`
+- `lastRequestAt`, `network`, `apiKeyRequired`
+
+**Stats:** https://facilitator.batchrail.io/stats
 
 ### `/supported`
 
@@ -88,7 +98,7 @@ or
 Authorization: Bearer <key>
 ```
 
-`/health` stays open for monitoring. When `API_KEY` is unset, the demo stays fully public.
+`/health` and `/stats` stay open for monitoring. When `API_KEY` is unset, the demo stays fully public.
 
 ## Gas and funds
 
