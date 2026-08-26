@@ -1,18 +1,14 @@
 /**
  * BatchRail Facilitator
  *
- * Real x402 v2 facilitator with the official batch-settlement scheme
- * wired in for Base Sepolia (eip155:84532).
- *
  * Endpoints:
  *   GET  /health
+ *   GET  /stats
  *   GET  /supported
  *   POST /verify
  *   POST /settle
  *
- * Optional protection (env):
- *   API_KEY — if set, require X-API-Key or Authorization: Bearer on all routes except /health
- *   RATE_LIMIT_PER_MIN — max requests per IP per minute (default 120)
+ * Optional: API_KEY, RATE_LIMIT_PER_MIN
  */
 
 import "dotenv/config";
@@ -85,6 +81,21 @@ facilitator
     console.error("[settle] failure:", error?.message ?? error);
   });
 
+// ── Public aggregate counters only (no keys, balances, payers, bodies) ──
+const stats = {
+  totalRequests: 0,
+  verifyCount: 0,
+  settleCount: 0,
+  supportedCount: 0,
+  rateLimitedCount: 0,
+  lastRequestAt: null as string | null,
+};
+
+function touchStats() {
+  stats.totalRequests += 1;
+  stats.lastRequestAt = new Date().toISOString();
+}
+
 function normalizeSupported(raw: unknown) {
   const data = (raw ?? {}) as {
     kinds?: Array<Record<string, unknown>>;
@@ -151,7 +162,6 @@ function normalizeSupported(raw: unknown) {
   return { kinds, extensions, signers };
 }
 
-// ── Optional rate limit (in-memory, per IP) ──────────────────
 type Bucket = { count: number; resetAt: number };
 const rateBuckets = new Map<string, Bucket>();
 
@@ -163,7 +173,7 @@ function clientIp(req: Request): string {
 }
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
-  if (req.path === "/health") return next();
+  if (req.path === "/health" || req.path === "/stats") return next();
 
   const ip = clientIp(req);
   const now = Date.now();
@@ -174,16 +184,17 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   }
   bucket.count += 1;
   if (bucket.count > RATE_LIMIT_PER_MIN) {
+    stats.rateLimitedCount += 1;
     res.setHeader("Retry-After", "60");
     return res.status(429).json({ error: "rate_limit_exceeded" });
   }
   next();
 }
 
-// ── Optional API key (only when API_KEY env is set) ──────────
 function optionalApiKey(req: Request, res: Response, next: NextFunction) {
-  if (!API_KEY) return next(); // open demo mode
-  if (req.path === "/health") return next(); // always open for probes
+  if (!API_KEY) return next();
+  // Public probes / usage surface
+  if (req.path === "/health" || req.path === "/stats") return next();
 
   const headerKey = req.header("x-api-key")?.trim();
   const auth = req.header("authorization")?.trim();
@@ -217,7 +228,23 @@ app.get("/health", (_req, res) => {
   });
 });
 
+/** Aggregate usage only — safe for public demo dashboards */
+app.get("/stats", (_req, res) => {
+  res.json({
+    totalRequests: stats.totalRequests,
+    verifyCount: stats.verifyCount,
+    settleCount: stats.settleCount,
+    supportedCount: stats.supportedCount,
+    rateLimitedCount: stats.rateLimitedCount,
+    lastRequestAt: stats.lastRequestAt,
+    network: NETWORK,
+    apiKeyRequired: Boolean(API_KEY),
+  });
+});
+
 app.get("/supported", async (_req, res) => {
+  touchStats();
+  stats.supportedCount += 1;
   try {
     const raw = await Promise.resolve(facilitator.getSupported());
     res.json(normalizeSupported(raw));
@@ -228,6 +255,8 @@ app.get("/supported", async (_req, res) => {
 });
 
 app.post("/verify", async (req, res) => {
+  touchStats();
+  stats.verifyCount += 1;
   try {
     const { paymentPayload, paymentRequirements } = req.body ?? {};
     if (!paymentPayload || !paymentRequirements) {
@@ -248,6 +277,8 @@ app.post("/verify", async (req, res) => {
 });
 
 app.post("/settle", async (req, res) => {
+  touchStats();
+  stats.settleCount += 1;
   try {
     const { paymentPayload, paymentRequirements } = req.body ?? {};
     if (!paymentPayload || !paymentRequirements) {
@@ -279,9 +310,9 @@ app.listen(PORT, "0.0.0.0", () => {
   } else {
     console.log("  Receiver authorizer (none — servers must supply their own)");
   }
-  console.log(`  API key             ${API_KEY ? "required (except /health)" : "open demo (API_KEY unset)"}`);
+  console.log(`  API key             ${API_KEY ? "required (except /health, /stats)" : "open demo (API_KEY unset)"}`);
   console.log(`  Rate limit          ${RATE_LIMIT_PER_MIN}/min per IP`);
   console.log("  Schemes             batch-settlement, exact");
-  console.log("  Endpoints           GET /supported  POST /verify  POST /settle");
+  console.log("  Endpoints           GET /health /stats /supported  POST /verify /settle");
   console.log("");
 });
