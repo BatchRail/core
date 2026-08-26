@@ -1,12 +1,6 @@
 /**
- * Example resource server protected by the real batch-settlement scheme.
- *
- * Flow:
- * 1. Client hits GET /weather
- * 2. Middleware returns 402 with batch-settlement requirements
- * 3. Client deposits (once) + sends a voucher
- * 4. Middleware verifies via our facilitator, then serves the resource
- * 5. ChannelManager periodically claims vouchers and settles USDC to EVM_ADDRESS
+ * Example resource server — batch-settlement on Base Sepolia.
+ * Public demo points FACILITATOR_URL at https://facilitator.batchrail.io
  */
 
 import "dotenv/config";
@@ -25,23 +19,22 @@ import {
 } from "@x402/express";
 
 const NETWORK = "eip155:84532" as const;
-const PORT = 4021;
+const PORT = Number(process.env.PORT ?? process.env.RESOURCE_PORT ?? 4021);
 
 const evmAddress = process.env.EVM_ADDRESS as `0x${string}` | undefined;
-const facilitatorUrl = process.env.FACILITATOR_URL ?? "http://localhost:4022";
+const facilitatorUrl =
+  process.env.FACILITATOR_URL ?? "https://facilitator.batchrail.io";
 const storageDir = process.env.CHANNEL_STORAGE_DIR ?? "./channels";
 const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "86400");
 
 if (!evmAddress || !/^0x[0-9a-fA-F]{40}$/.test(evmAddress)) {
   console.error(
-    "Missing or invalid EVM_ADDRESS in .env\n" +
-      "This is the payTo address that receives settled USDC (does not need ETH)."
+    "Missing or invalid EVM_ADDRESS\n" +
+      "This is YOUR payTo address that receives settled test USDC (does not need ETH)."
   );
   process.exit(1);
 }
 
-// Optional: local authorizer so claims/refunds work even if the facilitator
-// does not advertise a receiverAuthorizer.
 const authorizerKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
@@ -62,7 +55,6 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
   batchScheme
 );
 
-// Background claim / settle / refund loops
 const channelManager = batchScheme.createChannelManager(facilitatorClient, NETWORK);
 channelManager.start({
   claimIntervalSecs: Number(process.env.CLAIM_INTERVAL_SECS ?? 60),
@@ -97,7 +89,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       network: NETWORK,
       payTo: evmAddress,
     },
-    description: "Weather data (BatchRail demo)",
+    description: "Weather data (BatchRail public testnet demo)",
     mimeType: "application/json",
   },
 });
@@ -107,8 +99,19 @@ async function main() {
 
   app.use(paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, false));
 
+  // Unpaid health for Railway probes
+  app.get("/health", (_req, res) => {
+    res.json({
+      status: "ok",
+      service: "batchrail-example-server",
+      network: NETWORK,
+      facilitator: facilitatorUrl,
+      payTo: evmAddress,
+      resource: "GET /weather",
+    });
+  });
+
   app.get("/weather", (_req, res) => {
-    // Dynamic pricing demo: charge a random fraction of the max
     const chargedPercent = 1 + Math.floor(Math.random() * 100);
     setSettlementOverrides(res, { amount: `${chargedPercent}%` });
 
@@ -118,18 +121,16 @@ async function main() {
         temperature: 70 + Math.floor(Math.random() * 10),
       },
       charged: `${chargedPercent}% of ${maxPrice}`,
+      network: "eip155:84532",
+      note: "Base Sepolia testnet demo — Capt. Riker / BatchRail",
     });
   });
 
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", service: "batchrail-example-server", payTo: evmAddress });
-  });
-
-  app.listen(PORT, () => {
+  app.listen(PORT, "0.0.0.0", () => {
     console.log("");
     console.log("  BatchRail example resource server");
     console.log("  ─────────────────────────────────────");
-    console.log(`  URL          http://localhost:${PORT}`);
+    console.log(`  Port         ${PORT}`);
     console.log(`  Resource     GET /weather  (batch-settlement, max ${maxPrice})`);
     console.log(`  payTo        ${evmAddress}`);
     console.log(`  Facilitator  ${facilitatorUrl}`);
