@@ -70,15 +70,49 @@ registerExactEvmScheme(facilitator, {
   networks: NETWORK,
 });
 
+/** One JSON line — readable in Railway logs; never logs keys or full bodies */
+function logRouteError(
+  route: string,
+  err: unknown,
+  extra?: Record<string, unknown>
+) {
+  const e = err as { message?: string; name?: string; code?: string | number };
+  console.error(
+    JSON.stringify({
+      level: "error",
+      service: "batchrail-facilitator",
+      route,
+      message: e?.message ?? String(err),
+      name: e?.name ?? "Error",
+      code: e?.code,
+      ...extra,
+    })
+  );
+}
+
 facilitator
   .onBeforeVerify(async ({ requirements }) => {
-    console.log("[verify] scheme=%s network=%s", requirements.scheme, requirements.network);
+    console.log(
+      JSON.stringify({
+        level: "info",
+        route: "verify",
+        scheme: requirements?.scheme,
+        network: requirements?.network,
+      })
+    );
   })
   .onAfterSettle(async ({ result }) => {
-    console.log("[settle] success tx=%s", result.transaction ?? "(none)");
+    console.log(
+      JSON.stringify({
+        level: "info",
+        route: "settle",
+        success: true,
+        tx: result.transaction ?? null,
+      })
+    );
   })
   .onSettleFailure(async ({ error }) => {
-    console.error("[settle] failure:", error?.message ?? error);
+    logRouteError("settle", error);
   });
 
 // ── Public aggregate counters only (no keys, balances, payers, bodies) ──
@@ -193,7 +227,6 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
 
 function optionalApiKey(req: Request, res: Response, next: NextFunction) {
   if (!API_KEY) return next();
-  // Public probes / usage surface
   if (req.path === "/health" || req.path === "/stats") return next();
 
   const headerKey = req.header("x-api-key")?.trim();
@@ -228,7 +261,6 @@ app.get("/health", (_req, res) => {
   });
 });
 
-/** Aggregate usage only — safe for public demo dashboards */
 app.get("/stats", (_req, res) => {
   res.json({
     totalRequests: stats.totalRequests,
@@ -248,30 +280,43 @@ app.get("/supported", async (_req, res) => {
   try {
     const raw = await Promise.resolve(facilitator.getSupported());
     res.json(normalizeSupported(raw));
-  } catch (err: any) {
-    console.error("[supported] error", err);
-    res.status(500).json({ error: err?.message ?? "internal_error" });
+  } catch (err: unknown) {
+    logRouteError("supported", err);
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
 app.post("/verify", async (req, res) => {
   touchStats();
   stats.verifyCount += 1;
+  const paymentRequirements = (req.body ?? {}).paymentRequirements as
+    | { scheme?: string; network?: string }
+    | undefined;
   try {
-    const { paymentPayload, paymentRequirements } = req.body ?? {};
-    if (!paymentPayload || !paymentRequirements) {
+    const { paymentPayload, paymentRequirements: reqs } = req.body ?? {};
+    if (!paymentPayload || !reqs) {
+      console.log(
+        JSON.stringify({
+          level: "warn",
+          route: "verify",
+          message: "missing_paymentPayload_or_paymentRequirements",
+        })
+      );
       return res.status(400).json({
         isValid: false,
         invalidReason: "missing_paymentPayload_or_paymentRequirements",
       });
     }
-    const result = await facilitator.verify(paymentPayload, paymentRequirements);
+    const result = await facilitator.verify(paymentPayload, reqs);
     res.json(result);
-  } catch (err: any) {
-    console.error("[verify] error", err);
+  } catch (err: unknown) {
+    logRouteError("verify", err, {
+      scheme: paymentRequirements?.scheme,
+      network: paymentRequirements?.network,
+    });
     res.status(500).json({
       isValid: false,
-      invalidReason: err?.message ?? "internal_error",
+      invalidReason: (err as { message?: string })?.message ?? "internal_error",
     });
   }
 });
@@ -279,21 +324,34 @@ app.post("/verify", async (req, res) => {
 app.post("/settle", async (req, res) => {
   touchStats();
   stats.settleCount += 1;
+  const paymentRequirements = (req.body ?? {}).paymentRequirements as
+    | { scheme?: string; network?: string }
+    | undefined;
   try {
-    const { paymentPayload, paymentRequirements } = req.body ?? {};
-    if (!paymentPayload || !paymentRequirements) {
+    const { paymentPayload, paymentRequirements: reqs } = req.body ?? {};
+    if (!paymentPayload || !reqs) {
+      console.log(
+        JSON.stringify({
+          level: "warn",
+          route: "settle",
+          message: "missing_paymentPayload_or_paymentRequirements",
+        })
+      );
       return res.status(400).json({
         success: false,
         errorReason: "missing_paymentPayload_or_paymentRequirements",
       });
     }
-    const result = await facilitator.settle(paymentPayload, paymentRequirements);
+    const result = await facilitator.settle(paymentPayload, reqs);
     res.json(result);
-  } catch (err: any) {
-    console.error("[settle] error", err);
+  } catch (err: unknown) {
+    logRouteError("settle", err, {
+      scheme: paymentRequirements?.scheme,
+      network: paymentRequirements?.network,
+    });
     res.status(500).json({
       success: false,
-      errorReason: err?.message ?? "internal_error",
+      errorReason: (err as { message?: string })?.message ?? "internal_error",
     });
   }
 });
