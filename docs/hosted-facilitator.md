@@ -2,108 +2,137 @@
 
 Public test endpoint for BatchRail’s x402 facilitator.
 
-**Base URL:** https://facilitator.batchrail.io
+**Base URL:** https://facilitator.batchrail.io  
+**Maintainer (public):** Capt. Riker · [@BatchRail](https://x.com/BatchRail)
 
 ## Important notes
 
 - **Testnet only** — Base Sepolia (`eip155:84532`)
-- **No API key required** for the current public demo (unless the operator enables one)
+- **No API key required** for the current public demo
 - The **facilitator wallet pays gas** for on-chain deposit / claim / settle / refund relays
 - Do not send mainnet funds or production secrets to this endpoint
 
-## Quick setup
-
-Point your resource server at the hosted facilitator:
+## Env vars (yours only)
 
 ```env
+# Required for a seller resource server
 FACILITATOR_URL=https://facilitator.batchrail.io
+EVM_ADDRESS=0xYourReceiveAddressOnBaseSepolia
+
+# Network constant in code (not always an env)
+# eip155:84532
 ```
 
-Network to use in payment requirements:
+You do **not** need BatchRail’s private keys.  
+`EVM_ADDRESS` is **your** pay-to address (receives settled test USDC).
 
-```text
-eip155:84532
-```
+USDC on Base Sepolia: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |--------|------|--------|
-| `GET` | [/health](https://facilitator.batchrail.io/health) | Liveness and basic service info |
-| `GET` | [/stats](https://facilitator.batchrail.io/stats) | Public aggregate usage counters |
-| `GET` | [/supported](https://facilitator.batchrail.io/supported) | Schemes and networks this facilitator supports |
-| `POST` | `/verify` | Verify a payment payload (no gas) |
-| `POST` | `/settle` | Submit on-chain settlement actions |
+| `GET` | [/health](https://facilitator.batchrail.io/health) | Liveness |
+| `GET` | [/stats](https://facilitator.batchrail.io/stats) | Public usage counters |
+| `GET` | [/supported](https://facilitator.batchrail.io/supported) | Schemes & networks |
+| `POST` | `/verify` | Verify payment payload |
+| `POST` | `/settle` | On-chain settle actions |
 
-### `/health`
+---
 
-Returns JSON such as `{ "status": "ok", "network": "eip155:84532", ... }`.
-Use this to confirm the service is up.
+## 1. Minimal Express — one protected route
 
-### `/stats`
-
-Public usage snapshot (no keys, balances, or payer data):
-
-- `totalRequests`, `verifyCount`, `settleCount`, `supportedCount`, `rateLimitedCount`
-- `lastRequestAt`, `network`, `apiKeyRequired`
-
-**Stats:** https://facilitator.batchrail.io/stats
-
-### `/supported`
-
-Lists supported payment kinds (e.g. `batch-settlement`, `exact`) for Base Sepolia.
-Resource servers call this when initializing so they only offer schemes the facilitator can handle.
-
-## Minimal resource server config
-
-With the official x402 Express helpers:
+Copy-paste shape for a normal HTTP seller (bot or API):
 
 ```ts
+import express from "express";
+import { paymentMiddlewareFromHTTP, x402ResourceServer } from "@x402/express";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/server";
-import { x402ResourceServer } from "@x402/express";
 
-const NETWORK = "eip155:84532" as const;
+const NETWORK = "eip155:84532" as const; // Base Sepolia — testnet only
 const payTo = process.env.EVM_ADDRESS as `0x${string}`;
 
 const facilitatorClient = new HTTPFacilitatorClient({
   url: process.env.FACILITATOR_URL ?? "https://facilitator.batchrail.io",
 });
 
-const batchScheme = new BatchSettlementEvmScheme(payTo, {
-  // optional: receiverAuthorizerSigner, storage, withdrawDelay
-});
-
+const batchScheme = new BatchSettlementEvmScheme(payTo);
 const resourceServer = new x402ResourceServer(facilitatorClient).register(
   NETWORK,
   batchScheme
 );
+
+const app = express();
+
+app.get(
+  "/weather",
+  paymentMiddlewareFromHTTP(
+    {
+      accept: [
+        {
+          scheme: "batch-settlement",
+          network: NETWORK,
+          payTo,
+          // price in atomic USDC units — keep tiny on testnet
+          maxAmountRequired: "10000", // e.g. 0.01 USDC if 6 decimals
+          resource: "https://your-host.example/weather",
+          description: "Test weather (Base Sepolia)",
+          mimeType: "application/json",
+        },
+      ],
+    },
+    resourceServer
+  ),
+  (_req, res) => {
+    res.json({ ok: true, note: "paid on Base Sepolia testnet" });
+  }
+);
+
+app.listen(4021);
 ```
 
-Protect a route with `scheme: "batch-settlement"`, `network: "eip155:84532"`, and your `payTo` address.
+Package names follow official `@x402/*` SDKs. Full runnable loop: [BatchRail/core examples](https://github.com/BatchRail/core).
 
-Full runnable examples: [github.com/BatchRail/core](https://github.com/BatchRail/core) (`examples/server`, `examples/client`).
+---
+
+## 2. MCP / agent-tool sellers — one paid endpoint
+
+Same facilitator URL. Treat your tool HTTP handler like any x402 resource:
+
+```ts
+// Inside your MCP tool HTTP adapter or standalone paid route
+const FACILITATOR_URL =
+  process.env.FACILITATOR_URL ?? "https://facilitator.batchrail.io";
+const NETWORK = "eip155:84532"; // testnet only
+const payTo = process.env.EVM_ADDRESS; // your receive address
+
+// When an agent calls your tool:
+// 1) Respond 402 with payment requirements (batch-settlement + NETWORK + payTo)
+// 2) On retry with payment payload, POST verify/settle via FACILITATOR_URL
+// 3) Then run the tool and return the result
+
+// Env for the seller process:
+//   FACILITATOR_URL=https://facilitator.batchrail.io
+//   EVM_ADDRESS=0xYourAddress
+```
+
+**Warning:** Base Sepolia testnet only. No mainnet. Test USDC only. Do not put production keys in a public demo client.
+
+Wire the official `BatchSettlementEvmScheme` + `HTTPFacilitatorClient` the same way as the Express example; only the outer “tool” wrapper differs.
+
+---
 
 ## Optional API key
 
-If the operator sets `API_KEY` on the facilitator, clients must send:
-
-```http
-X-API-Key: <key>
-```
-
-or
-
-```http
-Authorization: Bearer <key>
-```
-
-`/health` and `/stats` stay open for monitoring. When `API_KEY` is unset, the demo stays fully public.
+Public demo currently has **no** API key. If an operator later sets `API_KEY`, send `X-API-Key` or `Authorization: Bearer …`. `/health` and `/stats` stay open.
 
 ## Gas and funds
 
-- **Facilitator key** (operator-controlled): pays gas on Base Sepolia for relayed txs
-- **Your `payTo` address**: receives settled USDC; does not need ETH
-- **Client / payer wallet**: needs Base Sepolia USDC to open a channel
+| Who | Needs |
+|-----|--------|
+| Facilitator (BatchRail) | Gas on Sepolia (operator-funded) |
+| Your `EVM_ADDRESS` | Nothing required to receive settled test USDC |
+| Paying client / agent | Base Sepolia USDC to open a channel |
 
-USDC on Base Sepolia: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
+Questions: [@BatchRail](https://x.com/BatchRail) (Capt. Riker).
