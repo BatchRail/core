@@ -77,7 +77,39 @@ process.on("SIGINT", async () => {
 });
 
 const app = express();
-app.use(cors());
+
+// Railway / reverse proxies: use X-Forwarded-* so resource URLs are https://
+app.set("trust proxy", 1);
+
+// Browser clients need to read x402 payment headers on 402 / 200 responses
+app.use(
+  cors({
+    origin: true,
+    credentials: false,
+    methods: ["GET", "POST", "OPTIONS", "HEAD"],
+    allowedHeaders: [
+      "Content-Type",
+      "PAYMENT-SIGNATURE",
+      "PAYMENT-REQUIRED",
+      "PAYMENT-RESPONSE",
+      "X-PAYMENT",
+      "X-PAYMENT-RESPONSE",
+      "payment-signature",
+      "payment-required",
+      "payment-response",
+    ],
+    exposedHeaders: [
+      "PAYMENT-REQUIRED",
+      "PAYMENT-RESPONSE",
+      "PAYMENT-SIGNATURE",
+      "X-PAYMENT",
+      "X-PAYMENT-RESPONSE",
+      "payment-required",
+      "payment-response",
+      "payment-signature",
+    ],
+  })
+);
 
 const maxPrice = "$0.01";
 
@@ -137,6 +169,7 @@ async function main() {
     console.log(
       `  Authorizer   ${receiverAuthorizerSigner ? receiverAuthorizerSigner.address + " (local)" : "facilitator-delegated"}`
     );
+    console.log("  trust proxy  on (HTTPS resource URLs behind Railway)");
     console.log("");
   });
 }
