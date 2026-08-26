@@ -12,6 +12,20 @@ Public test endpoint for BatchRail’s x402 facilitator.
 - The **facilitator wallet pays gas** for on-chain deposit / claim / settle / refund relays
 - Do not send mainnet funds or production secrets to this endpoint
 
+## Try a paid call (testnet)
+
+Live example resource (no repo clone required):
+
+| Path | URL |
+|------|-----|
+| Health | https://demo-resource-production.up.railway.app/health |
+| Paid route | https://demo-resource-production.up.railway.app/weather |
+
+- A **normal browser** on `/weather` will see **HTTP 402 Payment Required** (x402). That is expected.
+- An **x402 client** pays with **Base Sepolia test USDC** (batch-settlement), then retries and receives a small JSON weather payload.
+- Facilitator used by this demo: https://facilitator.batchrail.io  
+- **Testnet only.** No mainnet.
+
 ## Env vars (yours only)
 
 ```env
