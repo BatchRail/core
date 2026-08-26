@@ -9,10 +9,14 @@
  *   GET  /supported
  *   POST /verify
  *   POST /settle
+ *
+ * Optional protection (env):
+ *   API_KEY — if set, require X-API-Key or Authorization: Bearer on all routes except /health
+ *   RATE_LIMIT_PER_MIN — max requests per IP per minute (default 120)
  */
 
 import "dotenv/config";
-import express from "express";
+import express, { type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -23,10 +27,14 @@ import { toFacilitatorEvmSigner } from "@x402/evm";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
 import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
 
-// Railway injects PORT; local dev uses FACILITATOR_PORT or 4022
 const PORT = Number(process.env.PORT ?? process.env.FACILITATOR_PORT ?? 4022);
 const NETWORK = (process.env.NETWORK ?? "eip155:84532") as "eip155:84532";
 const RPC_URL = process.env.RPC_URL ?? "https://sepolia.base.org";
+const API_KEY = process.env.API_KEY?.trim() || "";
+const RATE_LIMIT_PER_MIN = Math.max(
+  1,
+  Number(process.env.RATE_LIMIT_PER_MIN ?? 120)
+);
 
 if (!process.env.FACILITATOR_PRIVATE_KEY) {
   console.error(
@@ -54,7 +62,6 @@ const walletClient = createWalletClient({
 }).extend(publicActions);
 
 const facilitatorSigner = toFacilitatorEvmSigner(walletClient);
-
 const facilitator = new x402Facilitator();
 
 facilitator.register(
@@ -144,9 +151,60 @@ function normalizeSupported(raw: unknown) {
   return { kinds, extensions, signers };
 }
 
+// ── Optional rate limit (in-memory, per IP) ──────────────────
+type Bucket = { count: number; resetAt: number };
+const rateBuckets = new Map<string, Bucket>();
+
+function clientIp(req: Request): string {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length) return xf.split(",")[0]!.trim();
+  if (Array.isArray(xf) && xf[0]) return xf[0].split(",")[0]!.trim();
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function rateLimit(req: Request, res: Response, next: NextFunction) {
+  if (req.path === "/health") return next();
+
+  const ip = clientIp(req);
+  const now = Date.now();
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + 60_000 };
+    rateBuckets.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > RATE_LIMIT_PER_MIN) {
+    res.setHeader("Retry-After", "60");
+    return res.status(429).json({ error: "rate_limit_exceeded" });
+  }
+  next();
+}
+
+// ── Optional API key (only when API_KEY env is set) ──────────
+function optionalApiKey(req: Request, res: Response, next: NextFunction) {
+  if (!API_KEY) return next(); // open demo mode
+  if (req.path === "/health") return next(); // always open for probes
+
+  const headerKey = req.header("x-api-key")?.trim();
+  const auth = req.header("authorization")?.trim();
+  const bearer =
+    auth && auth.toLowerCase().startsWith("bearer ")
+      ? auth.slice(7).trim()
+      : undefined;
+  const provided = headerKey || bearer;
+
+  if (provided !== API_KEY) {
+    return res.status(401).json({ error: "unauthorized", message: "Valid API key required" });
+  }
+  next();
+}
+
 const app = express();
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+app.use(rateLimit);
+app.use(optionalApiKey);
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -155,6 +213,7 @@ app.get("/health", (_req, res) => {
     network: NETWORK,
     address: account.address,
     receiverAuthorizer: authorizerAccount?.address ?? null,
+    apiKeyRequired: Boolean(API_KEY),
   });
 });
 
@@ -220,6 +279,8 @@ app.listen(PORT, "0.0.0.0", () => {
   } else {
     console.log("  Receiver authorizer (none — servers must supply their own)");
   }
+  console.log(`  API key             ${API_KEY ? "required (except /health)" : "open demo (API_KEY unset)"}`);
+  console.log(`  Rate limit          ${RATE_LIMIT_PER_MIN}/min per IP`);
   console.log("  Schemes             batch-settlement, exact");
   console.log("  Endpoints           GET /supported  POST /verify  POST /settle");
   console.log("");
