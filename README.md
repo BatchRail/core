@@ -4,6 +4,22 @@
 
 Open-source local demo. Product overview: [batchrail.io](https://batchrail.io)
 
+## Hosted facilitator (Base Sepolia)
+
+Public test facilitator:
+
+- **URL:** https://facilitator.batchrail.io
+- **Health:** https://facilitator.batchrail.io/health
+- **Supported schemes:** https://facilitator.batchrail.io/supported
+
+Point a resource server at it with:
+
+```env
+FACILITATOR_URL=https://facilitator.batchrail.io
+```
+
+Network: `eip155:84532` (Base Sepolia). No API key required for this public demo endpoint.
+
 ## What’s inside
 
 | Package / folder | Role |
@@ -18,7 +34,7 @@ Open-source local demo. Product overview: [batchrail.io](https://batchrail.io)
 
 - Node.js ≥ 20, pnpm ≥ 9
 - Base Sepolia wallets:
-  - **Facilitator key** — small amount of ETH for gas
+  - **Facilitator key** — small amount of ETH for gas (local runs)
   - **Client key (`EVM_PRIVATE_KEY`)** — Base Sepolia **USDC**  
     Token: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Faucet: https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet  
@@ -31,10 +47,11 @@ git clone https://github.com/BatchRail/core.git
 cd core
 pnpm install
 cp .env.example .env
-# edit .env — at minimum FACILITATOR_PRIVATE_KEY, EVM_ADDRESS, EVM_PRIVATE_KEY
+# edit .env — at minimum EVM_ADDRESS, EVM_PRIVATE_KEY
+# optional: FACILITATOR_URL=https://facilitator.batchrail.io
 ```
 
-**Terminal 1 — Facilitator**
+**Terminal 1 — Facilitator** (skip if using the hosted URL above)
 
 ```bash
 pnpm --filter @batchrail/facilitator dev
@@ -62,7 +79,7 @@ Expected flow:
 
 | Network | CAIP-2 | Status |
 |---------|--------|--------|
-| Base Sepolia | eip155:84532 | Primary (demo) |
+| Base Sepolia | eip155:84532 | Demo (hosted + local) |
 | Base | eip155:8453 | Planned |
 
 ## License
