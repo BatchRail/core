@@ -2,8 +2,11 @@
 
 Public test endpoint for BatchRail’s x402 facilitator.
 
-**Base URL:** https://facilitator.batchrail.io  
+**Facilitator (the rail):** https://facilitator.batchrail.io  
+**Demo seller (paid weather):** https://demo-resource-production.up.railway.app/weather  
 **Maintainer (public):** Capt. Riker · [@BatchRail](https://x.com/BatchRail)
+
+There is **no** `/weather` on the facilitator. The facilitator only verifies and settles. The demo resource is a separate example seller.
 
 ## Important notes
 
@@ -11,10 +14,18 @@ Public test endpoint for BatchRail’s x402 facilitator.
 - **No API key required** for the current public demo
 - The **facilitator wallet pays gas** for on-chain deposit / claim / settle / refund relays
 - Do not send mainnet funds or production secrets to this endpoint
+- Do not call `https://facilitator.batchrail.io/weather`
+
+## Two public hosts
+
+| Role | URL | What it is |
+|------|-----|------------|
+| Facilitator (rail) | https://facilitator.batchrail.io | `/health` `/supported` `/stats` `POST /verify` `POST /settle` |
+| Demo resource (seller) | https://demo-resource-production.up.railway.app | `GET /weather` → HTTP **402** in a browser |
 
 ## Try a paid call (testnet)
 
-Live example resource (no repo clone required):
+Live example **seller** (no repo clone required):
 
 | Path | URL |
 |------|-----|
@@ -23,7 +34,7 @@ Live example resource (no repo clone required):
 
 - A **normal browser** on `/weather` will see **HTTP 402 Payment Required** (x402). That is expected.
 - An **x402 client** pays with **Base Sepolia test USDC** (batch-settlement), then retries and receives a small JSON weather payload.
-- Facilitator used by this demo: https://facilitator.batchrail.io  
+- That seller points at the rail: https://facilitator.batchrail.io  
 - **Testnet only.** No mainnet.
 
 ## Env vars (yours only)
@@ -42,15 +53,17 @@ You do **not** need BatchRail’s private keys.
 
 USDC on Base Sepolia: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 
-## Endpoints
+## Facilitator endpoints
 
 | Method | Path | Purpose |
 |--------|------|--------|
 | `GET` | [/health](https://facilitator.batchrail.io/health) | Liveness |
 | `GET` | [/stats](https://facilitator.batchrail.io/stats) | Public usage counters |
-| `GET` | [/supported](https://facilitator.batchrail.io/supported) | Schemes & networks |
+| `GET` | [/supported](https://facilitator.batchrail.io/supported) | Schemes on Base Sepolia only |
 | `POST` | `/verify` | Verify payment payload |
 | `POST` | `/settle` | On-chain settle actions |
+
+`/supported` advertises **eip155:84532** only (`batch-settlement` + `exact`). Not mainnet.
 
 ---
 
@@ -88,8 +101,7 @@ app.get(
           scheme: "batch-settlement",
           network: NETWORK,
           payTo,
-          // price in atomic USDC units — keep tiny on testnet
-          maxAmountRequired: "10000", // e.g. 0.01 USDC if 6 decimals
+          maxAmountRequired: "10000",
           resource: "https://your-host.example/weather",
           description: "Test weather (Base Sepolia)",
           mimeType: "application/json",
@@ -115,7 +127,6 @@ Package names follow official `@x402/*` SDKs. Full runnable loop: [BatchRail/cor
 Same facilitator URL. Treat your tool HTTP handler like any x402 resource:
 
 ```ts
-// Inside your MCP tool HTTP adapter or standalone paid route
 const FACILITATOR_URL =
   process.env.FACILITATOR_URL ?? "https://facilitator.batchrail.io";
 const NETWORK = "eip155:84532"; // testnet only
@@ -125,15 +136,9 @@ const payTo = process.env.EVM_ADDRESS; // your receive address
 // 1) Respond 402 with payment requirements (batch-settlement + NETWORK + payTo)
 // 2) On retry with payment payload, POST verify/settle via FACILITATOR_URL
 // 3) Then run the tool and return the result
-
-// Env for the seller process:
-//   FACILITATOR_URL=https://facilitator.batchrail.io
-//   EVM_ADDRESS=0xYourAddress
 ```
 
 **Warning:** Base Sepolia testnet only. No mainnet. Test USDC only. Do not put production keys in a public demo client.
-
-Wire the official `BatchSettlementEvmScheme` + `HTTPFacilitatorClient` the same way as the Express example; only the outer “tool” wrapper differs.
 
 ---
 
