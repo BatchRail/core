@@ -32,6 +32,9 @@ const RATE_LIMIT_PER_MIN = Math.max(
   Number(process.env.RATE_LIMIT_PER_MIN ?? 120)
 );
 
+const ALLOWED_NETWORKS = new Set(["eip155:84532", "base-sepolia"]);
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+
 if (!process.env.FACILITATOR_PRIVATE_KEY) {
   console.error(
     "Missing FACILITATOR_PRIVATE_KEY\n" +
@@ -70,7 +73,6 @@ registerExactEvmScheme(facilitator, {
   networks: NETWORK,
 });
 
-/** One JSON line — readable in Railway logs; never logs keys or full bodies */
 function logRouteError(
   route: string,
   err: unknown,
@@ -115,7 +117,6 @@ facilitator
     logRouteError("settle", error);
   });
 
-// ── Public aggregate counters only (no keys, balances, payers, bodies) ──
 const stats = {
   totalRequests: 0,
   verifyCount: 0,
@@ -128,6 +129,11 @@ const stats = {
 function touchStats() {
   stats.totalRequests += 1;
   stats.lastRequestAt = new Date().toISOString();
+}
+
+function validAddress(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return ADDR_RE.test(value) ? value : null;
 }
 
 function normalizeSupported(raw: unknown) {
@@ -173,27 +179,37 @@ function normalizeSupported(raw: unknown) {
 
           return kind;
         })
-        .filter((k) => k.scheme && k.network)
+        .filter(
+          (k) =>
+            k.scheme &&
+            ALLOWED_NETWORKS.has(k.network) &&
+            (k.scheme === "batch-settlement" || k.scheme === "exact")
+        )
     : [];
+
+  const seen = new Set<string>();
+  const uniqueKinds = kinds.filter((k) => {
+    const key = `${k.x402Version}:${k.scheme}:${k.network}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   const extensions = Array.isArray(data.extensions)
     ? data.extensions.map((e) => String(e))
     : [];
 
-  const signers: Record<string, string[]> = {};
-  if (data.signers && typeof data.signers === "object" && !Array.isArray(data.signers)) {
-    for (const [family, addrs] of Object.entries(data.signers as Record<string, unknown>)) {
-      if (Array.isArray(addrs)) {
-        signers[family] = addrs.map((a) => String(a));
-      }
-    }
-  }
+  const signerAddr =
+    validAddress(account.address) ??
+    validAddress(authorizerAccount?.address);
 
-  if (!signers["eip155:*"] && !signers["eip155"]) {
-    signers["eip155:*"] = [account.address];
-  }
-
-  return { kinds, extensions, signers };
+  return {
+    kinds: uniqueKinds,
+    extensions,
+    signers: {
+      "eip155:84532": signerAddr ? [signerAddr] : [],
+    },
+  };
 }
 
 type Bucket = { count: number; resetAt: number };
@@ -371,6 +387,7 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`  API key             ${API_KEY ? "required (except /health, /stats)" : "open demo (API_KEY unset)"}`);
   console.log(`  Rate limit          ${RATE_LIMIT_PER_MIN}/min per IP`);
   console.log("  Schemes             batch-settlement, exact");
+  console.log("  Public networks     eip155:84532 (Base Sepolia only)");
   console.log("  Endpoints           GET /health /stats /supported  POST /verify /settle");
   console.log("");
 });
