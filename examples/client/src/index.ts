@@ -1,19 +1,24 @@
 /**
  * BatchRail example client — official batch-settlement scheme
  *
- * End-to-end local loop on Base Sepolia:
- * 1. Hit the protected resource (GET /weather)
+ * End-to-end loop on Base Sepolia:
+ * 1. Hit the protected resource (GET /weather by default)
  * 2. On first request: open a payment channel (deposit USDC once)
  * 3. Subsequent requests: sign cheap off-chain cumulative vouchers
  * 4. Server verifies via facilitator and returns the resource
  * 5. ChannelManager (on the server) later claims + settles on-chain
  *
+ * Channel state is written to disk. Restarting this process reuses the
+ * same channel instead of sending a fresh-deposit voucher at cumulative 0
+ * (that path returns 402 payment_invalid).
+ *
  * Requires:
- *   - Facilitator running on FACILITATOR_URL (default http://localhost:4022)
- *   - Example server running on RESOURCE_SERVER_URL (default http://localhost:4021)
+ *   - Facilitator on FACILITATOR_URL (local or https://facilitator.batchrail.io)
+ *   - Resource server on RESOURCE_SERVER_URL
  *   - EVM_PRIVATE_KEY funded with Base Sepolia USDC
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,37 +33,67 @@ import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
 import { FileClientChannelStorage } from "@x402/evm/batch-settlement/client/file-storage";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 
-// ── Load .env from several likely locations ─────────────────
-// `import "dotenv/config"` only reads process.cwd()/.env, which breaks
-// when pnpm runs the package from a different working directory.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageRoot = path.resolve(__dirname, "..");
+
 const envCandidates = [
   path.resolve(process.cwd(), ".env"),
   path.resolve(process.cwd(), "examples/client/.env"),
-  path.resolve(__dirname, "../.env"), // examples/client/.env
-  path.resolve(__dirname, "../../../.env"), // monorepo root from src/
+  path.resolve(packageRoot, ".env"),
+  path.resolve(__dirname, "../../../.env"),
 ];
 
 const loadedEnvPaths: string[] = [];
 for (const envPath of envCandidates) {
   if (fs.existsSync(envPath)) {
     const result = dotenv.config({ path: envPath, override: false });
-    if (!result.error) {
-      loadedEnvPaths.push(envPath);
-    }
+    if (!result.error) loadedEnvPaths.push(envPath);
   }
 }
 
 function readPrivateKey(): string | undefined {
-  // Accept common variants people accidentally use
   const raw =
     process.env.EVM_PRIVATE_KEY?.trim() ||
     process.env.CLIENT_PRIVATE_KEY?.trim() ||
     process.env.PRIVATE_KEY?.trim();
   if (!raw) return undefined;
-  // Strip surrounding quotes if present
-  const unquoted = raw.replace(/^['"]|['"]$/g, "");
-  return unquoted || undefined;
+  return raw.replace(/^[\'"]|[\'"]$/g, "") || undefined;
+}
+
+const ZERO_SALT =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+const SALT_RE = /^0x[0-9a-fA-F]{64}$/;
+
+function resolveStorageDir(): string {
+  const raw = process.env.CLIENT_CHANNEL_STORAGE_DIR?.trim();
+  if (raw) return path.resolve(process.cwd(), raw);
+  return path.join(packageRoot, ".client-channels");
+}
+
+function resolveSalt(storageDir: string): { salt: `0x${string}`; source: string } {
+  const envSalt = process.env.CHANNEL_SALT?.trim();
+  if (envSalt) {
+    if (!SALT_RE.test(envSalt)) {
+      throw new Error(
+        "CHANNEL_SALT must be 0x + 64 hex chars (bytes32). Omit it to reuse the salt file."
+      );
+    }
+    return { salt: envSalt as `0x${string}`, source: "CHANNEL_SALT env" };
+  }
+
+  const saltFile = path.join(storageDir, "channel-salt.txt");
+  if (fs.existsSync(saltFile)) {
+    const saved = fs.readFileSync(saltFile, "utf8").trim();
+    if (!SALT_RE.test(saved)) {
+      throw new Error(`Invalid salt in ${saltFile}`);
+    }
+    return { salt: saved as `0x${string}`, source: saltFile };
+  }
+
+  const generated = (`0x${crypto.randomBytes(32).toString("hex")}`) as `0x${string}`;
+  fs.mkdirSync(storageDir, { recursive: true });
+  fs.writeFileSync(saltFile, `${generated}\n`, "utf8");
+  return { salt: generated, source: `generated → ${saltFile}` };
 }
 
 const evmPrivateKeyRaw = readPrivateKey();
@@ -74,10 +109,7 @@ if (!evmPrivateKeyRaw) {
   }
   if (loadedEnvPaths.length) {
     console.error("Loaded from:", loadedEnvPaths.join(", "));
-    console.error(
-      "A .env was loaded but EVM_PRIVATE_KEY was empty or missing inside it."
-    );
-    console.error('Expected line:  EVM_PRIVATE_KEY=0xabc123...  (no spaces around =)');
+    console.error("A .env was loaded but EVM_PRIVATE_KEY was empty or missing inside it.");
   } else {
     console.error("No .env file was found in any of the paths above.");
   }
@@ -85,23 +117,17 @@ if (!evmPrivateKeyRaw) {
 }
 
 if (!/^0x[0-9a-fA-F]{64}$/.test(evmPrivateKeyRaw)) {
-  console.error(
-    "EVM_PRIVATE_KEY looks invalid. Expected 0x + 64 hex characters (32-byte key)."
-  );
-  console.error(`Got length=${evmPrivateKeyRaw.length} prefix=${evmPrivateKeyRaw.slice(0, 4)}…`);
+  console.error("EVM_PRIVATE_KEY looks invalid. Expected 0x + 64 hex characters.");
   process.exit(1);
 }
 
 const evmPrivateKey = evmPrivateKeyRaw as `0x${string}`;
 const voucherKeyRaw =
-  process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY?.trim()?.replace(/^['"]|['"]$/g, "") ||
+  process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY?.trim()?.replace(/^[\'"]|[\'"]$/g, "") ||
   undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
-const storageDir = process.env.CLIENT_CHANNEL_STORAGE_DIR || "./client-channels";
-const channelSalt = (process.env.CHANNEL_SALT ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
 const depositMultiplier = Number(process.env.DEPOSIT_MULTIPLIER ?? "5");
 const refundAfterRequests = process.env.REFUND_AFTER_REQUESTS === "true";
@@ -109,6 +135,10 @@ const refundAmount = process.env.REFUND_AMOUNT;
 const rpcUrl = process.env.RPC_URL || "https://sepolia.base.org";
 
 async function main(): Promise<void> {
+  const storageDir = resolveStorageDir();
+  fs.mkdirSync(storageDir, { recursive: true });
+  const { salt: channelSalt, source: saltSource } = resolveSalt(storageDir);
+
   const account = privateKeyToAccount(evmPrivateKey);
   const publicClient = createPublicClient({
     chain: baseSepolia,
@@ -142,8 +172,17 @@ async function main(): Promise<void> {
   console.log(`  Target          ${url}`);
   console.log(`  Payer           ${signer.address}`);
   console.log(`  Voucher signer  ${voucherSigner?.address ?? signer.address}`);
+  console.log(`  Storage         ${storageDir}`);
+  console.log(`  Channel salt    ${channelSalt}`);
+  console.log(`  Salt source     ${saltSource}`);
+  if (channelSalt.toLowerCase() === ZERO_SALT) {
+    console.log(
+      "  Note            zero salt = one channel per payer+payTo+token+authorizer+delay"
+    );
+  }
   console.log(`  Requests        ${numberOfRequests}`);
   console.log(`  Deposit mult.   ${depositMultiplier}x`);
+  console.log("  Network         eip155:84532 (Base Sepolia — testnet only)");
   console.log("");
 
   for (let i = 0; i < numberOfRequests; i++) {
@@ -180,7 +219,7 @@ async function main(): Promise<void> {
     console.log(`Refund completed in ${((performance.now() - refundT0) / 1000).toFixed(3)}s`);
   }
 
-  console.log("Done. Check the example-server logs for claim/settle activity.");
+  console.log("Done. Channel files are in the storage dir — keep them to reuse this channel.");
 }
 
 main().catch((error) => {
