@@ -30,6 +30,19 @@ Read `extra.receiverAuthorizer` from live [`/supported`](https://facilitator.bat
 
 On batch-settlement the scheme serves the resource after verify, before the voucher is claimed on-chain. Claim on a timer and when a buyer starts withdrawal (`WithdrawInitiated` on the contract — the rail does not stream that event). Advertise `withdrawDelay` well above your claim cadence (24h is conservative).
 
+## Seller payment-response (second-buy checklist)
+
+A seller that omits the charged cumulative looks fine on the **first** purchase (channel open) and only fails on the **second** (`402 payment_invalid`).
+
+Every successful paid batch response must include:
+
+- `extra.chargedAmount` — this request’s **price**, not the channel deposit
+- `extra.channelState.chargedCumulativeAmount` — running **price** total on that channel
+
+On a channel-opening sale the top-level `amount` may be the deposit (often 5× price). Official buyer SDKs sign the next voucher from `chargedCumulativeAmount`, not from that deposit. Pin test: two sequential purchases on one channel.
+
+Buyer-side: persist channel state and salt (`examples/client`). In-memory storage + zero salt is a separate footgun.
+
 ## Two public hosts
 
 | Role | URL | What it is |
